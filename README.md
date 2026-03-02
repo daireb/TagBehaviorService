@@ -30,10 +30,6 @@ TagBehaviorService:start()
 pesde add gh#daireb/tagbehaviorservice#v0.2.0
 ```
 
-### Wally
-
-Copy `src/init.luau` into your packages directory.
-
 ### Manual
 
 Drop `src/init.luau` into your project and `require` it.
