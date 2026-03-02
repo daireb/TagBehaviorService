@@ -27,7 +27,7 @@ TagBehaviorService:start()
 ### pesde
 
 ```sh
-pesde add gh#daireb/tagbehaviorservice#v0.1.0
+pesde add gh#daireb/tagbehaviorservice#v0.2.0
 ```
 
 ### Wally
