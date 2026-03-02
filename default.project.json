@@ -1,0 +1,21 @@
+{
+  "name": "TagBehaviorService",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Packages": {
+        "$className": "Folder",
+        "TagBehaviorService": {
+          "$path": "src"
+        }
+      }
+    },
+
+    "ServerScriptService": {
+      "Tests": {
+        "$path": "tests"
+      }
+    }
+  }
+}
