@@ -59,6 +59,44 @@ end, {
 TagBehaviorService:start()
 ```
 
+Or use `registerFolder` to auto-register a folder of behavior modules:
+
+```luau
+local TagBehaviorService = require(game.ReplicatedStorage.Packages.TagBehaviorService)
+
+TagBehaviorService:registerFolder(script.Behaviors)
+TagBehaviorService:start()
+```
+
+Where each ModuleScript in `Behaviors/` returns a factory (tag = module name):
+
+```luau
+-- Behaviors/Glowing.luau
+return function(part)
+    local light = Instance.new("PointLight")
+    light.Parent = part
+    return function()
+        light:Destroy()
+    end
+end
+```
+
+Or a table for extra options:
+
+```luau
+-- Behaviors/Glowing.luau
+return {
+    className = "BasePart",
+    factory = function(part)
+        local light = Instance.new("PointLight")
+        light.Parent = part
+        return function()
+            light:Destroy()
+        end
+    end,
+}
+```
+
 The module returns a ready-to-use singleton — no `.new()` needed. Errors in factories, cleanup, and predicates are caught and logged via `warn` so they never crash the service.
 
 ## API Reference
@@ -82,6 +120,26 @@ Registers a behavior factory for the given tag.
 | `className` | `string?` | `nil` | Only attach to instances passing `instance:IsA(className)` |
 | `predicate` | `((Instance) -> boolean)?` | `nil` | Arbitrary filter; errors are caught and warned |
 | `defer` | `boolean?` | `false` | Defer the factory call via `task.defer` to spread load |
+
+---
+
+### `:registerFolder(folder) -> unsubscribeAllFn`
+
+Requires every descendant `ModuleScript` in `folder` and subscribes each one.
+
+Each module should return either a **factory function** (tag defaults to `ModuleScript.Name`) or a **`BehaviorDefinition` table**:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tag` | `string?` | Module name | Override the tag name |
+| `factory` | `(Instance) -> (() -> ())?` | *required* | The behavior factory |
+| `className` | `string?` | `nil` | Same as `SubscribeOptions.className` |
+| `predicate` | `((Instance) -> boolean)?` | `nil` | Same as `SubscribeOptions.predicate` |
+| `defer` | `boolean?` | `false` | Same as `SubscribeOptions.defer` |
+
+**Returns** an idempotent function that unsubscribes all behaviors from this folder.
+
+Modules that fail to require or return unexpected types are warned and skipped.
 
 ---
 

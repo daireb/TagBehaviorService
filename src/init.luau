@@ -23,6 +23,14 @@ export type ContextInfo = {
 	active: boolean,
 }
 
+export type BehaviorDefinition = {
+	tag: string?,
+	factory: (instance: Instance) -> (() -> ())?,
+	className: string?,
+	predicate: ((instance: Instance) -> boolean)?,
+	defer: boolean?,
+}
+
 -- Internal types
 
 type ErrorPhase = "factory" | "cleanup" | "predicate"
@@ -310,6 +318,73 @@ function TagBehaviorService.start(self: TagBehaviorService)
 
 	for _, sub in self:_collectAllSubs() do
 		self:_activateSubscription(sub)
+	end
+end
+
+--[=[
+	Registers every descendant ModuleScript in `folder` as a tag subscription.
+
+	Each module should return either:
+	- A factory function (tag defaults to `ModuleScript.Name`)
+	- A `BehaviorDefinition` table with a `factory` field and optional
+	  `tag`, `className`, `predicate`, `defer` fields.
+
+	Returns an idempotent function that unsubscribes all behaviors
+	registered from this folder.
+]=]
+function TagBehaviorService.registerFolder(
+	self: TagBehaviorService,
+	folder: Instance
+): () -> ()
+	local unsubs: { () -> () } = {}
+
+	for _, child in folder:QueryDescendants("ModuleScript") do
+
+		local ok, result = pcall(require, child)
+		if not ok then
+			warn(`[TagBehaviorService] Failed to require {child:GetFullName()}: {tostring(result)}`)
+			continue
+		end
+
+		local tag: string
+		local factory: (instance: Instance) -> (() -> ())?
+		local opts: SubscribeOptions = {}
+
+		if type(result) == "function" then
+			tag = child.Name
+			factory = result
+		elseif type(result) == "table" then
+			local def = result :: BehaviorDefinition
+			tag = def.tag or child.Name
+			factory = def.factory
+
+			if type(factory) ~= "function" then
+				warn(`[TagBehaviorService] {child:GetFullName()} must export a factory function`)
+				continue
+			end
+
+			opts = {
+				className = def.className,
+				predicate = def.predicate,
+				defer = def.defer,
+			}
+		else
+			warn(`[TagBehaviorService] {child:GetFullName()} must return a function or table, got {type(result)}`)
+			continue
+		end
+
+		table.insert(unsubs, self:subscribe(tag, factory, opts))
+	end
+
+	local unregistered = false
+	return function()
+		if unregistered then
+			return
+		end
+		unregistered = true
+		for _, unsub in unsubs do
+			unsub()
+		end
 	end
 end
 
