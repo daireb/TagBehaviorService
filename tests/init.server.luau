@@ -249,82 +249,7 @@ test("unsubscribe cleans up active contexts and is idempotent", function()
 	part:Destroy()
 end)
 
--- 8. Deferred attach ------------------------------------------------------
-
-test("deferred attach runs factory after deferral", function()
-	local tag = uniqueTag()
-	local part = makePart(tag)
-
-	local attached = false
-	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(_instance)
-		attached = true
-		return nil
-	end, { defer = true })
-	tbs:start()
-
-	expect(not attached, "should not attach synchronously with defer")
-	local ctx = tbs:getContext(tag, part)
-	expect(ctx ~= nil and not ctx.active, "should be pending")
-
-	task.wait()
-	task.wait()
-
-	expect(attached, "should attach after deferral")
-	expect(tbs:isActive(tag, part), "should be active")
-
-	unsub()
-	part:Destroy()
-end)
-
--- 9. Deferred cancellation on tag removal ---------------------------------
-
-test("deferred attach is cancelled when tag is removed before it fires", function()
-	local tag = uniqueTag()
-
-	local factoryCalled = false
-	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(_instance)
-		factoryCalled = true
-		return nil
-	end, { defer = true })
-	tbs:start()
-
-	local part = makePart()
-	CollectionService:AddTag(part, tag)
-	CollectionService:RemoveTag(part, tag)
-	task.wait()
-	task.wait()
-
-	expect(not factoryCalled, "factory should not have been called")
-
-	unsub()
-	part:Destroy()
-end)
-
--- 10. Deferred cancellation on unsubscribe --------------------------------
-
-test("deferred attach is cancelled when unsubscribed before it fires", function()
-	local tag = uniqueTag()
-	local part = makePart(tag)
-
-	local factoryCalled = false
-	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(_instance)
-		factoryCalled = true
-		return nil
-	end, { defer = true })
-	tbs:start()
-	unsub()
-	task.wait()
-	task.wait()
-
-	expect(not factoryCalled, "factory should not run after unsubscribe")
-
-	part:Destroy()
-end)
-
--- 11. Error isolation — factory error doesn't crash service ---------------
+-- 8. Error isolation — factory error doesn't crash service ----------------
 
 test("factory error does not prevent other subscriptions from working", function()
 	local tagBad = uniqueTag()
@@ -352,7 +277,7 @@ test("factory error does not prevent other subscriptions from working", function
 	partGood:Destroy()
 end)
 
--- 12. Error isolation — cleanup error doesn't crash service ---------------
+-- 9. Error isolation — cleanup error doesn't crash service ----------------
 
 test("cleanup error does not crash the service", function()
 	local tag = uniqueTag()
@@ -376,9 +301,9 @@ test("cleanup error does not crash the service", function()
 	part:Destroy()
 end)
 
--- 13. className filtering -------------------------------------------------
+-- 10. Predicate filters instances (IsA example) ---------------------------
 
-test("className filter skips non-matching instances", function()
+test("predicate filters instances by class", function()
 	local tag = uniqueTag()
 
 	local folder = Instance.new("Folder")
@@ -392,7 +317,9 @@ test("className filter skips non-matching instances", function()
 	local unsub = tbs:subscribe(tag, function(instance)
 		table.insert(attachedInstances, instance)
 		return nil
-	end, { className = "BasePart" })
+	end, function(instance)
+		return instance:IsA("BasePart")
+	end)
 	tbs:start()
 
 	expectEqual(#attachedInstances, 1, "only BasePart attached")
@@ -403,9 +330,9 @@ test("className filter skips non-matching instances", function()
 	part:Destroy()
 end)
 
--- 14. Predicate filtering -------------------------------------------------
+-- 11. Predicate filters by name -------------------------------------------
 
-test("predicate filter controls which instances are attached", function()
+test("predicate filters by instance name", function()
 	local tag = uniqueTag()
 	local partA = makePart(tag)
 	partA.Name = "Allow"
@@ -417,11 +344,9 @@ test("predicate filter controls which instances are attached", function()
 	local unsub = tbs:subscribe(tag, function(instance)
 		table.insert(attached, instance.Name)
 		return nil
-	end, {
-		predicate = function(instance)
-			return instance.Name == "Allow"
-		end,
-	})
+	end, function(instance)
+		return instance.Name == "Allow"
+	end)
 	tbs:start()
 
 	expectEqual(#attached, 1, "count")
@@ -432,7 +357,7 @@ test("predicate filter controls which instances are attached", function()
 	partB:Destroy()
 end)
 
--- 15. Predicate error is isolated -----------------------------------------
+-- 12. Predicate error is isolated -----------------------------------------
 
 test("predicate error skips instance without crashing", function()
 	local tag = uniqueTag()
@@ -443,11 +368,9 @@ test("predicate error skips instance without crashing", function()
 	local unsub = tbs:subscribe(tag, function(_instance)
 		attachCount += 1
 		return nil
-	end, {
-		predicate = function(_instance)
-			error("predicate fail")
-		end,
-	})
+	end, function(_instance)
+		error("predicate fail")
+	end)
 	tbs:start()
 
 	expectEqual(attachCount, 0, "should not attach when predicate errors")
@@ -456,7 +379,7 @@ test("predicate error skips instance without crashing", function()
 	part:Destroy()
 end)
 
--- 16. Subscribe after start -----------------------------------------------
+-- 13. Subscribe after start -----------------------------------------------
 
 test("subscribe after start immediately activates", function()
 	local tag = uniqueTag()
@@ -477,7 +400,7 @@ test("subscribe after start immediately activates", function()
 	part:Destroy()
 end)
 
--- 17. getActiveCount -------------------------------------------------------
+-- 14. getActiveCount -------------------------------------------------------
 
 test("getActiveCount returns correct counts", function()
 	local tagA = uniqueTag()
@@ -506,7 +429,7 @@ test("getActiveCount returns correct counts", function()
 	partB1:Destroy()
 end)
 
--- 18. Multiple subscriptions for same tag ----------------------------------
+-- 15. Multiple subscriptions for same tag ----------------------------------
 
 test("multiple subscriptions for the same tag work independently", function()
 	local tag = uniqueTag()
@@ -546,7 +469,7 @@ test("multiple subscriptions for the same tag work independently", function()
 	part:Destroy()
 end)
 
--- 19. isStarted reflects state correctly -----------------------------------
+-- 16. isStarted reflects state correctly -----------------------------------
 
 test("isStarted reflects lifecycle state", function()
 	local tbs = TBS.new()
@@ -555,7 +478,7 @@ test("isStarted reflects lifecycle state", function()
 	expect(tbs:isStarted(), "after start")
 end)
 
--- 20. Factory returning non-function doesn't crash -------------------------
+-- 17. Factory returning non-function doesn't crash -------------------------
 
 test("factory returning non-function warns but does not crash", function()
 	local tag = uniqueTag()
@@ -583,7 +506,7 @@ test("factory returning non-function warns but does not crash", function()
 	partGood:Destroy()
 end)
 
--- 21. At-most-once cleanup guarantee --------------------------------------
+-- 18. At-most-once cleanup guarantee --------------------------------------
 
 test("cleanup is invoked at most once per activation", function()
 	local tag = uniqueTag()

@@ -1,5 +1,5 @@
 name = "daireb/tagbehaviorservice"
-version = "0.2.0"
+version = "0.3.0"
 description = "A small utility for attaching behavior to CollectionService tags"
 authors = ["daireb"]
 license = "MIT"

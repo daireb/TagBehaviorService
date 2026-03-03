@@ -13,40 +13,25 @@ local CollectionService = game:GetService("CollectionService")
 
 -- Exported types
 
-export type SubscribeOptions = {
-	className: string?,
-	predicate: ((instance: Instance) -> boolean)?,
-	defer: boolean?,
-}
-
-export type ContextInfo = {
-	active: boolean,
-}
-
 export type BehaviorDefinition = {
 	tag: string?,
 	factory: (instance: Instance) -> (() -> ())?,
-	className: string?,
 	predicate: ((instance: Instance) -> boolean)?,
-	defer: boolean?,
 }
 
 -- Internal types
 
 type ErrorPhase = "factory" | "cleanup" | "predicate"
 
-type ContextState = "pending" | "active"
-
 type Context = {
 	cleanup: (() -> ())?,
 	destroyingConn: RBXScriptConnection?,
-	state: ContextState,
 }
 
 type Subscription = {
 	tag: string,
 	factory: (instance: Instance) -> (() -> ())?,
-	options: SubscribeOptions,
+	predicate: ((instance: Instance) -> boolean)?,
 	contexts: { [Instance]: Context },
 	addedConn: RBXScriptConnection?,
 	removedConn: RBXScriptConnection?,
@@ -58,25 +43,18 @@ local function reportError(phase: ErrorPhase, tag: string, instance: Instance, e
 	warn(`[TagBehaviorService] {phase} error for tag "{tag}" on {instance:GetFullName()}: {err}`)
 end
 
-local function passesFilters(sub: Subscription, instance: Instance): boolean
-	local className = sub.options.className
-	if className ~= nil and not instance:IsA(className) then
+local function passesPredicate(sub: Subscription, instance: Instance): boolean
+	local predicate = sub.predicate
+	if predicate == nil then
+		return true
+	end
+
+	local ok, result = pcall(predicate, instance)
+	if not ok then
+		reportError("predicate", sub.tag, instance, tostring(result))
 		return false
 	end
-
-	local predicate = sub.options.predicate
-	if predicate ~= nil then
-		local ok, result = pcall(predicate, instance)
-		if not ok then
-			reportError("predicate", sub.tag, instance, tostring(result))
-			return false
-		end
-		if not result then
-			return false
-		end
-	end
-
-	return true
+	return result == true
 end
 
 local function runFactory(sub: Subscription, instance: Instance, context: Context)
@@ -89,7 +67,6 @@ local function runFactory(sub: Subscription, instance: Instance, context: Contex
 
 	if not ok then
 		reportError("factory", sub.tag, instance, tostring(result))
-		context.state = "active"
 		return
 	end
 
@@ -100,12 +77,10 @@ local function runFactory(sub: Subscription, instance: Instance, context: Contex
 			instance,
 			`Factory must return nil or a cleanup function, got {type(result)}`
 		)
-		context.state = "active"
 		return
 	end
 
 	context.cleanup = result :: (() -> ())?
-	context.state = "active"
 end
 
 local function cleanupContext(sub: Subscription, instance: Instance)
@@ -122,13 +97,11 @@ local function cleanupContext(sub: Subscription, instance: Instance)
 		context.destroyingConn = nil
 	end
 
-	if context.state == "active" then
-		local cleanup = context.cleanup
-		if cleanup ~= nil then
-			local ok, err = pcall(cleanup)
-			if not ok then
-				reportError("cleanup", sub.tag, instance, tostring(err))
-			end
+	local cleanup = context.cleanup
+	if cleanup ~= nil then
+		local ok, err = pcall(cleanup)
+		if not ok then
+			reportError("cleanup", sub.tag, instance, tostring(err))
 		end
 	end
 end
@@ -144,7 +117,6 @@ local function deactivateSubscription(sub: Subscription)
 		sub.removedConn = nil
 	end
 
-	-- Collect instances before iterating to avoid modifying the table during iteration
 	local instances: { Instance } = {}
 	for instance in sub.contexts do
 		table.insert(instances, instance)
@@ -174,25 +146,20 @@ function TagBehaviorService.new(): TagBehaviorService
 	return self
 end
 
--- Private methods (need self for instance state)
+-- Private methods
 
-function TagBehaviorService._attachInstance(
-	self: TagBehaviorService,
-	sub: Subscription,
-	instance: Instance
-)
+local function attachInstance(sub: Subscription, instance: Instance)
 	if sub.contexts[instance] then
 		return
 	end
 
-	if not passesFilters(sub, instance) then
+	if not passesPredicate(sub, instance) then
 		return
 	end
 
 	local context: Context = {
 		cleanup = nil,
 		destroyingConn = nil,
-		state = if sub.options.defer then "pending" else "active" :: ContextState,
 	}
 	sub.contexts[instance] = context
 
@@ -200,28 +167,13 @@ function TagBehaviorService._attachInstance(
 		cleanupContext(sub, instance)
 	end)
 
-	if sub.options.defer then
-		task.defer(function()
-			if sub.contexts[instance] ~= context then
-				return
-			end
-			if context.state ~= "pending" then
-				return
-			end
-			if not self._started then
-				return
-			end
-			runFactory(sub, instance, context)
-		end)
-	else
-		runFactory(sub, instance, context)
-	end
+	runFactory(sub, instance, context)
 end
 
 function TagBehaviorService._activateSubscription(self: TagBehaviorService, sub: Subscription)
 	sub.addedConn = CollectionService:GetInstanceAddedSignal(sub.tag):Connect(function(instance)
 		if self._started then
-			self:_attachInstance(sub, instance)
+			attachInstance(sub, instance)
 		end
 	end)
 
@@ -230,7 +182,7 @@ function TagBehaviorService._activateSubscription(self: TagBehaviorService, sub:
 	end)
 
 	for _, instance in CollectionService:GetTagged(sub.tag) do
-		self:_attachInstance(sub, instance)
+		attachInstance(sub, instance)
 	end
 end
 
@@ -253,13 +205,15 @@ end
 	that runs when the tag is removed, the instance is destroyed, or the
 	subscription is cancelled.
 
+	An optional predicate filters which tagged instances are eligible.
+
 	Returns an idempotent unsubscribe function.
 ]=]
 function TagBehaviorService.subscribe(
 	self: TagBehaviorService,
 	tag: string,
 	factory: (instance: Instance) -> (() -> ())?,
-	opts: SubscribeOptions?
+	predicate: ((instance: Instance) -> boolean)?
 ): () -> ()
 	assert(type(tag) == "string" and #tag > 0, "Tag must be a non-empty string")
 	assert(type(factory) == "function", "Factory must be a function")
@@ -267,7 +221,7 @@ function TagBehaviorService.subscribe(
 	local sub: Subscription = {
 		tag = tag,
 		factory = factory,
-		options = if opts then opts else {} :: SubscribeOptions,
+		predicate = predicate,
 		contexts = {},
 		addedConn = nil,
 		removedConn = nil,
@@ -327,7 +281,7 @@ end
 	Each module should return either:
 	- A factory function (tag defaults to `ModuleScript.Name`)
 	- A `BehaviorDefinition` table with a `factory` field and optional
-	  `tag`, `className`, `predicate`, `defer` fields.
+	  `tag` and `predicate` fields.
 
 	Returns an idempotent function that unsubscribes all behaviors
 	registered from this folder.
@@ -339,7 +293,6 @@ function TagBehaviorService.registerFolder(
 	local unsubs: { () -> () } = {}
 
 	for _, child in folder:QueryDescendants("ModuleScript") do
-
 		local ok, result = pcall(require, child)
 		if not ok then
 			warn(`[TagBehaviorService] Failed to require {child:GetFullName()}: {tostring(result)}`)
@@ -348,7 +301,7 @@ function TagBehaviorService.registerFolder(
 
 		local tag: string
 		local factory: (instance: Instance) -> (() -> ())?
-		local opts: SubscribeOptions = {}
+		local predicate: ((instance: Instance) -> boolean)? = nil
 
 		if type(result) == "function" then
 			tag = child.Name
@@ -357,23 +310,18 @@ function TagBehaviorService.registerFolder(
 			local def = result :: BehaviorDefinition
 			tag = def.tag or child.Name
 			factory = def.factory
+			predicate = def.predicate
 
 			if type(factory) ~= "function" then
 				warn(`[TagBehaviorService] {child:GetFullName()} must export a factory function`)
 				continue
 			end
-
-			opts = {
-				className = def.className,
-				predicate = def.predicate,
-				defer = def.defer,
-			}
 		else
 			warn(`[TagBehaviorService] {child:GetFullName()} must return a function or table, got {type(result)}`)
 			continue
 		end
 
-		table.insert(unsubs, self:subscribe(tag, factory, opts))
+		table.insert(unsubs, self:subscribe(tag, factory, predicate))
 	end
 
 	local unregistered = false
@@ -396,34 +344,7 @@ function TagBehaviorService.isStarted(self: TagBehaviorService): boolean
 end
 
 --[=[
-	Returns introspection info for the first subscription matching the
-	given `(tag, instance)` pair, or nil if no binding exists.
-]=]
-function TagBehaviorService.getContext(
-	self: TagBehaviorService,
-	tag: string,
-	instance: Instance
-): ContextInfo?
-	local subs = self._tagSubs[tag]
-	if not subs then
-		return nil
-	end
-
-	for _, sub in subs do
-		local context = sub.contexts[instance]
-		if context then
-			return {
-				active = context.state == "active",
-			}
-		end
-	end
-
-	return nil
-end
-
---[=[
-	Returns `true` if there is an active (non-pending) binding for the
-	given `(tag, instance)` pair.
+	Returns `true` if there is a binding for the given `(tag, instance)` pair.
 ]=]
 function TagBehaviorService.isActive(self: TagBehaviorService, tag: string, instance: Instance): boolean
 	local subs = self._tagSubs[tag]
@@ -432,8 +353,7 @@ function TagBehaviorService.isActive(self: TagBehaviorService, tag: string, inst
 	end
 
 	for _, sub in subs do
-		local context = sub.contexts[instance]
-		if context and context.state == "active" then
+		if sub.contexts[instance] then
 			return true
 		end
 	end
@@ -442,8 +362,8 @@ function TagBehaviorService.isActive(self: TagBehaviorService, tag: string, inst
 end
 
 --[=[
-	Returns the number of active (non-pending) bindings. Pass a tag to
-	scope the count, or omit it to count across all tags.
+	Returns the number of active bindings. Pass a tag to scope the count,
+	or omit it to count across all tags.
 ]=]
 function TagBehaviorService.getActiveCount(self: TagBehaviorService, tag: string?): number
 	local count = 0
@@ -452,20 +372,16 @@ function TagBehaviorService.getActiveCount(self: TagBehaviorService, tag: string
 		local subs = self._tagSubs[tag]
 		if subs then
 			for _, sub in subs do
-				for _, context in sub.contexts do
-					if context.state == "active" then
-						count += 1
-					end
+				for _ in sub.contexts do
+					count += 1
 				end
 			end
 		end
 	else
 		for _, subs in self._tagSubs do
 			for _, sub in subs do
-				for _, context in sub.contexts do
-					if context.state == "active" then
-						count += 1
-					end
+				for _ in sub.contexts do
+					count += 1
 				end
 			end
 		end

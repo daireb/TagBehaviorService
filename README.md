@@ -27,7 +27,7 @@ TagBehaviorService:start()
 ### pesde
 
 ```sh
-pesde add gh#daireb/tagbehaviorservice#v0.2.0
+pesde add gh#daireb/tagbehaviorservice#v0.3.0
 ```
 
 ### Wally
@@ -51,9 +51,9 @@ TagBehaviorService:subscribe("Glowing", function(part)
     return function()
         light:Destroy()
     end
-end, {
-    className = "BasePart",
-})
+end, function(instance)
+    return instance:IsA("BasePart")
+end)
 
 -- Start listening for tagged instances
 TagBehaviorService:start()
@@ -81,12 +81,14 @@ return function(part)
 end
 ```
 
-Or a table for extra options:
+Or a table for a custom tag name or predicate:
 
 ```luau
 -- Behaviors/Glowing.luau
 return {
-    className = "BasePart",
+    predicate = function(instance)
+        return instance:IsA("BasePart")
+    end,
     factory = function(part)
         local light = Instance.new("PointLight")
         light.Parent = part
@@ -101,7 +103,7 @@ The module returns a ready-to-use singleton — no `.new()` needed. Errors in fa
 
 ## API Reference
 
-### `:subscribe(tag, factory, opts?) -> unsubscribeFn`
+### `:subscribe(tag, factory, predicate?) -> unsubscribeFn`
 
 Registers a behavior factory for the given tag.
 
@@ -109,17 +111,9 @@ Registers a behavior factory for the given tag.
 |-----------|------|-------------|
 | `tag` | `string` | CollectionService tag name |
 | `factory` | `(instance: Instance) -> (() -> ())?` | Called once per matching instance; may return a cleanup function |
-| `opts` | `SubscribeOptions?` | Optional filtering / scheduling options |
+| `predicate` | `((instance: Instance) -> boolean)?` | Optional filter; errors are caught and warned |
 
 **Returns** an idempotent `() -> ()` unsubscribe function. Calling it tears down all active contexts for this subscription and disconnects signals.
-
-**SubscribeOptions**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `className` | `string?` | `nil` | Only attach to instances passing `instance:IsA(className)` |
-| `predicate` | `((Instance) -> boolean)?` | `nil` | Arbitrary filter; errors are caught and warned |
-| `defer` | `boolean?` | `false` | Defer the factory call via `task.defer` to spread load |
 
 ---
 
@@ -133,9 +127,7 @@ Each module should return either a **factory function** (tag defaults to `Module
 |-------|------|---------|-------------|
 | `tag` | `string?` | Module name | Override the tag name |
 | `factory` | `(Instance) -> (() -> ())?` | *required* | The behavior factory |
-| `className` | `string?` | `nil` | Same as `SubscribeOptions.className` |
-| `predicate` | `((Instance) -> boolean)?` | `nil` | Same as `SubscribeOptions.predicate` |
-| `defer` | `boolean?` | `false` | Same as `SubscribeOptions.defer` |
+| `predicate` | `((Instance) -> boolean)?` | `nil` | Optional filter |
 
 **Returns** an idempotent function that unsubscribes all behaviors from this folder.
 
@@ -155,21 +147,9 @@ Returns `true` if the service is currently started.
 
 ---
 
-### `:getContext(tag, instance) -> ContextInfo?`
-
-Returns introspection info for a `(tag, instance)` binding, or `nil` if no binding exists.
-
-**ContextInfo**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `active` | `boolean` | `true` if factory has run; `false` if deferred and still pending |
-
----
-
 ### `:isActive(tag, instance) -> boolean`
 
-Returns `true` if there is an active (non-pending) binding for the pair.
+Returns `true` if there is a binding for the given `(tag, instance)` pair.
 
 ---
 
@@ -180,7 +160,7 @@ Returns the number of active bindings. Pass a tag to scope the count, or omit it
 ## Lifecycle Semantics
 
 ```
-subscribe(tag, factory)
+subscribe(tag, factory, predicate?)
         |
     start()
         |
@@ -190,23 +170,13 @@ subscribe(tag, factory)
   |   GetInstanceAddedSignal(tag) fires
   |                |
   v                v
-  passesFilters? --no--> skip
+  predicate? ---false--> skip
         |
-       yes
+       true
         |
-  +-----+------+
-  |            |
-  defer?     immediate
-  |            |
-  task.defer   factory(instance) --> cleanup?
-  |                     |
-  (pending)        state = active
-  |
   factory(instance) --> cleanup?
-          |
-     state = active
-          |
-  +-------+--------+-----------------+
+        |
+  +-----+----------+-----------------+
   |                 |                 |
   tag removed    Destroying       unsubscribe
   |                 |                 |
@@ -218,10 +188,9 @@ subscribe(tag, factory)
 ### Key guarantees
 
 - **Exactly one context per (tag, instance)** — duplicate add signals are idempotent.
-- **At-most-once cleanup** — once cleanup runs (or the context is cancelled), it will never run again for that activation.
+- **At-most-once cleanup** — once cleanup runs (or the context is removed), it will never run again for that activation.
 - **Error isolation** — a throwing factory, cleanup, or predicate is caught with `pcall` and logged via `warn`. Other subscriptions and instances are unaffected.
 - **Destroy safety** — if an instance is destroyed without an explicit untag, the `Destroying` event triggers cleanup.
-- **Race safety** — rapid add/remove/add sequences, stops during deferred attach, and unsubscribes while attach is pending are all handled correctly through context identity checks and state guards.
 - **Idempotent calls** — `start` and unsubscribe functions are safe to call multiple times.
 
 ## Guarantees and Non-Goals
@@ -236,7 +205,7 @@ subscribe(tag, factory)
 ### Non-goals
 
 - **Not a replacement for ECS / state systems.** TagBehaviorService is best for instance-centric concerns: visual helpers, proximity prompts, map props, debug overlays. Authoritative gameplay state should live in dedicated state management.
-- **No built-in retry.** If a factory errors, the instance is marked active (with no cleanup) to prevent retry loops. Remove and re-add the tag to retry.
+- **No built-in retry.** If a factory errors, the instance is still tracked to prevent retry loops. Remove and re-add the tag to retry.
 - **No ordering guarantees between subscriptions.** If two subscriptions target the same tag, their factory execution order is not guaranteed.
 
 ## When to Use
@@ -270,12 +239,12 @@ TagBehaviorService:subscribe("Bouncy", function(part)
     return function()
         part.CustomPhysicalProperties = original
     end
-end, {
-    className = "BasePart",
-})
+end, function(instance)
+    return instance:IsA("BasePart")
+end)
 ```
 
-### Behavior with custom predicate
+### Behavior with attribute check
 
 ```luau
 TagBehaviorService:subscribe("NPC", function(model)
@@ -294,12 +263,9 @@ TagBehaviorService:subscribe("NPC", function(model)
     return function()
         billboard:Destroy()
     end
-end, {
-    className = "Model",
-    predicate = function(model)
-        return model:FindFirstChild("Head") ~= nil
-    end,
-})
+end, function(model)
+    return model:IsA("Model") and model:FindFirstChild("Head") ~= nil
+end)
 ```
 
 ### Behavior using Janitor internally (without depending on Janitor)
@@ -321,28 +287,9 @@ TagBehaviorService:subscribe("InteractableChest", function(chest)
     return function()
         janitor:Destroy()
     end
-end, {
-    className = "Model",
-})
-```
-
-### Deferred heavy attach
-
-```luau
-TagBehaviorService:subscribe("DetailedFoliage", function(model)
-    -- Runs deferred, so it won't block the frame where
-    -- many instances are streamed in at once.
-    local particles = Instance.new("ParticleEmitter")
-    particles.Rate = 5
-    particles.Parent = model.PrimaryPart
-
-    return function()
-        particles:Destroy()
-    end
-end, {
-    className = "Model",
-    defer = true,
-})
+end, function(instance)
+    return instance:IsA("Model")
+end)
 ```
 
 ## Testing
@@ -356,11 +303,8 @@ The test suite lives in `tests/init.server.luau` and runs inside a Roblox DataMo
 - Duplicate signal idempotency
 - Re-attach after remove + re-add
 - Unsubscribe behaviour and idempotency
-- Stop / start cycle preservation
-- Unsubscribe cleanup and idempotency
-- Deferred attach and cancellation (tag removal, stop)
 - Error isolation (factory, cleanup, predicate)
-- `className` and `predicate` filtering
+- Predicate filtering (by class, by name)
 - `getActiveCount` and introspection helpers
 - At-most-once cleanup guarantee
 - Factory return-type validation
