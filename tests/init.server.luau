@@ -531,6 +531,349 @@ test("cleanup is invoked at most once per activation", function()
 	unsub()
 end)
 
+-- 19. Update called on attach with dt=0 ------------------------------------
+
+test("update is called on attach with dt=0", function()
+	local tag = uniqueTag()
+	local part = makePart(tag)
+
+	local updateCalls: { { Instance | number } } = {}
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(
+		tag,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(instance, dt)
+			table.insert(updateCalls, { instance, dt })
+		end
+	)
+	tbs:start()
+
+	expectEqual(#updateCalls, 1, "update call count")
+	expectEqual(updateCalls[1][1], part, "update instance")
+	expectEqual(updateCalls[1][2], 0, "update dt")
+
+	unsub()
+	part:Destroy()
+end)
+
+-- 20. updateAll calls update for active instances --------------------------
+
+test("updateAll calls update for all active instances", function()
+	local tagA = uniqueTag()
+	local tagB = uniqueTag()
+	local partA = makePart(tagA)
+	local partB = makePart(tagB)
+
+	local updateCount = 0
+	local lastDt = 0
+	local tbs = TBS.new()
+	local unsub1 = tbs:subscribe(
+		tagA,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, dt)
+			updateCount += 1
+			lastDt = dt
+		end
+	)
+	local unsub2 = tbs:subscribe(
+		tagB,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, dt)
+			updateCount += 1
+			lastDt = dt
+		end
+	)
+	tbs:start()
+
+	-- Reset after initial on-attach updates
+	updateCount = 0
+	lastDt = 0
+
+	tbs:updateAll(0.5)
+
+	expectEqual(updateCount, 2, "update count")
+	expectEqual(lastDt, 0.5, "dt value")
+
+	unsub1()
+	unsub2()
+	partA:Destroy()
+	partB:Destroy()
+end)
+
+-- 21. updateTag scopes to correct tag --------------------------------------
+
+test("updateTag only updates the specified tag", function()
+	local tagA = uniqueTag()
+	local tagB = uniqueTag()
+	local partA = makePart(tagA)
+	local partB = makePart(tagB)
+
+	local countA = 0
+	local countB = 0
+	local tbs = TBS.new()
+	local unsub1 = tbs:subscribe(
+		tagA,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, _dt)
+			countA += 1
+		end
+	)
+	local unsub2 = tbs:subscribe(
+		tagB,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, _dt)
+			countB += 1
+		end
+	)
+	tbs:start()
+
+	-- Reset after initial on-attach updates
+	countA = 0
+	countB = 0
+
+	tbs:updateTag(tagA, 0.1)
+
+	expectEqual(countA, 1, "tagA updated")
+	expectEqual(countB, 0, "tagB not updated")
+
+	unsub1()
+	unsub2()
+	partA:Destroy()
+	partB:Destroy()
+end)
+
+-- 22. Update error is isolated ---------------------------------------------
+
+test("update error does not crash other updates", function()
+	local tagBad = uniqueTag()
+	local tagGood = uniqueTag()
+	local partBad = makePart(tagBad)
+	local partGood = makePart(tagGood)
+
+	local goodUpdateCount = 0
+	local tbs = TBS.new()
+	local unsub1 = tbs:subscribe(
+		tagBad,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, _dt)
+			error("update boom")
+		end
+	)
+	local unsub2 = tbs:subscribe(
+		tagGood,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, _dt)
+			goodUpdateCount += 1
+		end
+	)
+	tbs:start()
+
+	-- Reset after initial on-attach updates (bad one errored, good one ran)
+	goodUpdateCount = 0
+
+	tbs:updateAll(0.1)
+
+	expectEqual(goodUpdateCount, 1, "good update still runs")
+
+	unsub1()
+	unsub2()
+	partBad:Destroy()
+	partGood:Destroy()
+end)
+
+-- 23. Update not called for instances that fail predicate -------------------
+
+test("update not called for instances filtered by predicate", function()
+	local tag = uniqueTag()
+	local folder = Instance.new("Folder")
+	folder.Parent = workspace
+	CollectionService:AddTag(folder, tag)
+
+	local part = makePart(tag)
+
+	local updateInstances: { Instance } = {}
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(tag, function(_instance)
+		return nil
+	end, function(instance)
+		return instance:IsA("BasePart")
+	end, function(instance, _dt)
+		table.insert(updateInstances, instance)
+	end)
+	tbs:start()
+
+	-- On-attach update should only fire for the part
+	expectEqual(#updateInstances, 1, "on-attach count")
+	expectEqual(updateInstances[1], part, "on-attach instance")
+
+	-- Reset and do an explicit update
+	updateInstances = {}
+	tbs:updateAll(0.1)
+
+	expectEqual(#updateInstances, 1, "updateAll count")
+	expectEqual(updateInstances[1], part, "updateAll instance")
+
+	unsub()
+	folder:Destroy()
+	part:Destroy()
+end)
+
+-- 24. Update not called after cleanup/unsubscribe --------------------------
+
+test("update not called after unsubscribe", function()
+	local tag = uniqueTag()
+	local part = makePart(tag)
+
+	local updateCount = 0
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(
+		tag,
+		function(_instance)
+			return nil
+		end,
+		nil,
+		function(_instance, _dt)
+			updateCount += 1
+		end
+	)
+	tbs:start()
+
+	-- Reset after on-attach
+	updateCount = 0
+	unsub()
+
+	tbs:updateAll(0.1)
+	expectEqual(updateCount, 0, "no updates after unsub")
+
+	part:Destroy()
+end)
+
+-- 25. Subscribe without update works unchanged (backwards compat) ----------
+
+test("subscribe without update works unchanged", function()
+	local tag = uniqueTag()
+	local part = makePart(tag)
+
+	local attached = false
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(tag, function(_instance)
+		attached = true
+		return nil
+	end)
+	tbs:start()
+
+	expect(attached, "should attach without update param")
+
+	tbs:updateAll(0.1)
+
+	expect(tbs:isActive(tag, part), "still active after updateAll")
+
+	unsub()
+	part:Destroy()
+end)
+
+-- 26. getRegisteredTags returns correct tags --------------------------------
+
+test("getRegisteredTags returns correct tags", function()
+	local tagA = uniqueTag()
+	local tagB = uniqueTag()
+
+	local tbs = TBS.new()
+	expectEqual(#tbs:getRegisteredTags(), 0, "empty initially")
+
+	local unsub1 = tbs:subscribe(tagA, function(_instance)
+		return nil
+	end)
+	local unsub2 = tbs:subscribe(tagB, function(_instance)
+		return nil
+	end)
+
+	local tags = tbs:getRegisteredTags()
+	expectEqual(#tags, 2, "two tags registered")
+
+	local hasA = table.find(tags, tagA) ~= nil
+	local hasB = table.find(tags, tagB) ~= nil
+	expect(hasA, "contains tagA")
+	expect(hasB, "contains tagB")
+
+	unsub1()
+	tags = tbs:getRegisteredTags()
+	expectEqual(#tags, 1, "one tag after unsub")
+	expectEqual(tags[1], tagB, "remaining tag is tagB")
+
+	unsub2()
+	expectEqual(#tbs:getRegisteredTags(), 0, "empty after all unsubs")
+end)
+
+-- 27. hasUpdate returns true/false correctly --------------------------------
+
+test("hasUpdate returns true/false correctly", function()
+	local tagWithUpdate = uniqueTag()
+	local tagWithout = uniqueTag()
+
+	local tbs = TBS.new()
+	expect(not tbs:hasUpdate(tagWithUpdate), "false for unregistered tag")
+
+	local unsub1 = tbs:subscribe(tagWithUpdate, function(_instance)
+		return nil
+	end, nil, function(_instance, _dt) end)
+
+	local unsub2 = tbs:subscribe(tagWithout, function(_instance)
+		return nil
+	end)
+
+	expect(tbs:hasUpdate(tagWithUpdate), "true for tag with update")
+	expect(not tbs:hasUpdate(tagWithout), "false for tag without update")
+
+	unsub1()
+	expect(not tbs:hasUpdate(tagWithUpdate), "false after unsub")
+
+	unsub2()
+end)
+
+-- 28. updateTag is a no-op for tags with no update -------------------------
+
+test("updateTag is a no-op for tags with no update", function()
+	local tag = uniqueTag()
+	local part = makePart(tag)
+
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(tag, function(_instance)
+		return nil
+	end)
+	tbs:start()
+
+	-- Should not error
+	tbs:updateTag(tag, 0.1)
+	tbs:updateTag("nonexistent_tag", 0.1)
+
+	expect(tbs:isActive(tag, part), "still active")
+
+	unsub()
+	part:Destroy()
+end)
+
 -- ---------------------------------------------------------------------------
 -- Summary
 -- ---------------------------------------------------------------------------

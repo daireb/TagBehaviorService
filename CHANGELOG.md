@@ -5,6 +5,17 @@ All notable changes to TagBehaviorService will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-02
+
+### Added
+
+- Optional `update` field on `BehaviorDefinition` and as a parameter on `subscribe()`. Defines a per-frame callback `(instance, dt) -> ()` that runs via `updateAll`/`updateTag`.
+- `updateAll(dt)` — calls every active subscription's `update` for all its instances. Pull-based: the consumer controls scheduling.
+- `updateTag(tag, dt)` — like `updateAll` but scoped to a single tag. No-op for tags without an update function.
+- `getRegisteredTags()` — returns all tags with at least one subscription.
+- `hasUpdate(tag)` — returns whether any subscription for a tag has an `update` function.
+- Initial update on attach: when a subscription has `update`, it is called with `dt=0` immediately after the factory runs, preventing one-frame flicker.
+
 ## [0.3.0] - 2026-03-02
 
 ### Changed

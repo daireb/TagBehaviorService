@@ -27,7 +27,7 @@ TagBehaviorService:start()
 ### pesde
 
 ```sh
-pesde add gh#daireb/tagbehaviorservice#v0.3.0
+pesde add gh#daireb/tagbehaviorservice#v0.4.0
 ```
 
 ### Manual
@@ -77,7 +77,7 @@ return function(part)
 end
 ```
 
-Or a table for a custom tag name or predicate:
+Or a table for a custom tag name, predicate, or update function:
 
 ```luau
 -- Behaviors/Glowing.luau
@@ -95,11 +95,32 @@ return {
 }
 ```
 
-The module returns a ready-to-use singleton — no `.new()` needed. Errors in factories, cleanup, and predicates are caught and logged via `warn` so they never crash the service.
+Behaviors can also define an `update` function for per-frame logic:
+
+```luau
+-- Behaviors/Spinner.luau
+return {
+    factory = function(part)
+        return nil
+    end,
+    update = function(part, dt)
+        part.CFrame *= CFrame.Angles(0, math.rad(90) * dt, 0)
+    end,
+}
+```
+
+Wire up updates by calling `updateAll` from your game loop:
+
+```luau
+local RunService = game:GetService("RunService")
+RunService.Heartbeat:Connect(function(dt)
+    TagBehaviorService:updateAll(dt)
+end)
+```
 
 ## API Reference
 
-### `:subscribe(tag, factory, predicate?) -> unsubscribeFn`
+### `:subscribe(tag, factory, predicate?, update?) -> unsubscribeFn`
 
 Registers a behavior factory for the given tag.
 
@@ -108,6 +129,7 @@ Registers a behavior factory for the given tag.
 | `tag` | `string` | CollectionService tag name |
 | `factory` | `(instance: Instance) -> (() -> ())?` | Called once per matching instance; may return a cleanup function |
 | `predicate` | `((instance: Instance) -> boolean)?` | Optional filter; errors are caught and warned |
+| `update` | `((instance: Instance, dt: number) -> ())?` | Optional per-frame callback; called with `dt=0` on attach, then via `updateAll`/`updateTag` |
 
 **Returns** an idempotent `() -> ()` unsubscribe function. Calling it tears down all active contexts for this subscription and disconnects signals.
 
@@ -124,6 +146,7 @@ Each module should return either a **factory function** (tag defaults to `Module
 | `tag` | `string?` | Module name | Override the tag name |
 | `factory` | `(Instance) -> (() -> ())?` | *required* | The behavior factory |
 | `predicate` | `((Instance) -> boolean)?` | `nil` | Optional filter |
+| `update` | `((Instance, dt: number) -> ())?` | `nil` | Optional per-frame callback |
 
 **Returns** an idempotent function that unsubscribes all behaviors from this folder.
 
@@ -153,10 +176,40 @@ Returns `true` if there is a binding for the given `(tag, instance)` pair.
 
 Returns the number of active bindings. Pass a tag to scope the count, or omit it to count across all tags.
 
+---
+
+### `:updateAll(dt)`
+
+Calls the `update` function for every active context whose subscription has one. The consumer controls when and how often to call this.
+
+```luau
+RunService.Heartbeat:Connect(function(dt)
+    TagBehaviorService:updateAll(dt)
+end)
+```
+
+---
+
+### `:updateTag(tag, dt)`
+
+Like `updateAll`, but scoped to a single tag. Safe to call on tags with no update function (no-op). Useful for custom scheduling where different tags update at different rates or in a specific order.
+
+---
+
+### `:getRegisteredTags() -> { string }`
+
+Returns a list of all tags that have at least one subscription. Useful for introspection, debugging, or building custom update schedules.
+
+---
+
+### `:hasUpdate(tag) -> boolean`
+
+Returns `true` if any subscription for the given tag has an `update` function. Useful for filtering debug UIs or scheduler displays to only show updateable behaviors.
+
 ## Lifecycle Semantics
 
 ```
-subscribe(tag, factory, predicate?)
+subscribe(tag, factory, predicate?, update?)
         |
     start()
         |
@@ -172,6 +225,8 @@ subscribe(tag, factory, predicate?)
         |
   factory(instance) --> cleanup?
         |
+  update?(instance, 0)    <-- initial update on attach
+        |
   +-----+----------+-----------------+
   |                 |                 |
   tag removed    Destroying       unsubscribe
@@ -179,6 +234,12 @@ subscribe(tag, factory, predicate?)
   v                 v                 v
   cleanup() (at-most-once, pcall-wrapped)
   context removed
+
+  updateAll(dt) / updateTag(tag, dt)
+        |
+        v
+  for each active context with update:
+        update(instance, dt)
 ```
 
 ### Key guarantees
@@ -193,7 +254,7 @@ subscribe(tag, factory, predicate?)
 
 ### Guarantees
 
-- Zero external dependencies — no Janitor, Maid, or Trove required.
+- Zero external dependencies.
 - Works with deferred and immediate signal modes.
 - Factory return type is validated at runtime.
 - Singleton by default; `.new()` is available via the metatable for test isolation or multi-scope use.
@@ -203,6 +264,7 @@ subscribe(tag, factory, predicate?)
 - **Not a replacement for ECS / state systems.** TagBehaviorService is best for instance-centric concerns: visual helpers, proximity prompts, map props, debug overlays. Authoritative gameplay state should live in dedicated state management.
 - **No built-in retry.** If a factory errors, the instance is still tracked to prevent retry loops. Remove and re-add the tag to retry.
 - **No ordering guarantees between subscriptions.** If two subscriptions target the same tag, their factory execution order is not guaranteed.
+- **No built-in scheduling.** `updateAll` and `updateTag` are pull-based — the consumer decides when and how often to call them. Use `RunService.Heartbeat`, a custom scheduler, or any other driver.
 
 ## When to Use
 
@@ -264,6 +326,31 @@ end, function(model)
 end)
 ```
 
+### Behavior with per-frame update
+
+```luau
+local states = {}
+
+TagBehaviorService:subscribe("Spinner", function(part)
+    states[part] = { angle = 0 }
+    return function()
+        states[part] = nil
+    end
+end, function(instance)
+    return instance:IsA("BasePart")
+end, function(part, dt)
+    local state = states[part]
+    state.angle += math.rad(90) * dt
+    part.CFrame = CFrame.new(part.Position) * CFrame.Angles(0, state.angle, 0)
+end)
+
+-- Drive updates from Heartbeat
+local RunService = game:GetService("RunService")
+RunService.Heartbeat:Connect(function(dt)
+    TagBehaviorService:updateAll(dt)
+end)
+```
+
 ### Behavior using Janitor internally (without depending on Janitor)
 
 ```luau
@@ -305,6 +392,10 @@ The test suite lives in `tests/init.server.luau` and runs inside a Roblox DataMo
 - At-most-once cleanup guarantee
 - Factory return-type validation
 - Multiple subscriptions per tag
+- Update on attach (dt=0), `updateAll`, and `updateTag`
+- Update error isolation
+- Update not called for predicate-filtered or unsubscribed instances
+- `getRegisteredTags` and `hasUpdate` introspection
 
 ## License
 

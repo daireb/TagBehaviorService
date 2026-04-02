@@ -17,11 +17,12 @@ export type BehaviorDefinition = {
 	tag: string?,
 	factory: (instance: Instance) -> (() -> ())?,
 	predicate: ((instance: Instance) -> boolean)?,
+	update: ((instance: Instance, dt: number) -> ())?,
 }
 
 -- Internal types
 
-type ErrorPhase = "factory" | "cleanup" | "predicate"
+type ErrorPhase = "factory" | "cleanup" | "predicate" | "update"
 
 type Context = {
 	cleanup: (() -> ())?,
@@ -32,6 +33,7 @@ type Subscription = {
 	tag: string,
 	factory: (instance: Instance) -> (() -> ())?,
 	predicate: ((instance: Instance) -> boolean)?,
+	update: ((instance: Instance, dt: number) -> ())?,
 	contexts: { [Instance]: Context },
 	addedConn: RBXScriptConnection?,
 	removedConn: RBXScriptConnection?,
@@ -71,12 +73,7 @@ local function runFactory(sub: Subscription, instance: Instance, context: Contex
 	end
 
 	if result ~= nil and type(result) ~= "function" then
-		reportError(
-			"factory",
-			sub.tag,
-			instance,
-			`Factory must return nil or a cleanup function, got {type(result)}`
-		)
+		reportError("factory", sub.tag, instance, `Factory must return nil or a cleanup function, got {type(result)}`)
 		return
 	end
 
@@ -168,6 +165,13 @@ local function attachInstance(sub: Subscription, instance: Instance)
 	end)
 
 	runFactory(sub, instance, context)
+
+	if sub.update and sub.contexts[instance] == context then
+		local ok, err = pcall(sub.update, instance, 0)
+		if not ok then
+			reportError("update", sub.tag, instance, tostring(err))
+		end
+	end
 end
 
 function TagBehaviorService._activateSubscription(self: TagBehaviorService, sub: Subscription)
@@ -213,7 +217,8 @@ function TagBehaviorService.subscribe(
 	self: TagBehaviorService,
 	tag: string,
 	factory: (instance: Instance) -> (() -> ())?,
-	predicate: ((instance: Instance) -> boolean)?
+	predicate: ((instance: Instance) -> boolean)?,
+	update: ((instance: Instance, dt: number) -> ())?
 ): () -> ()
 	assert(type(tag) == "string" and #tag > 0, "Tag must be a non-empty string")
 	assert(type(factory) == "function", "Factory must be a function")
@@ -222,6 +227,7 @@ function TagBehaviorService.subscribe(
 		tag = tag,
 		factory = factory,
 		predicate = predicate,
+		update = update,
 		contexts = {},
 		addedConn = nil,
 		removedConn = nil,
@@ -281,15 +287,12 @@ end
 	Each module should return either:
 	- A factory function (tag defaults to `ModuleScript.Name`)
 	- A `BehaviorDefinition` table with a `factory` field and optional
-	  `tag` and `predicate` fields.
+	  `tag`, `predicate`, and `update` fields.
 
 	Returns an idempotent function that unsubscribes all behaviors
 	registered from this folder.
 ]=]
-function TagBehaviorService.registerFolder(
-	self: TagBehaviorService,
-	folder: Instance
-): () -> ()
+function TagBehaviorService.registerFolder(self: TagBehaviorService, folder: Instance): () -> ()
 	local unsubs: { () -> () } = {}
 
 	for _, child in folder:QueryDescendants("ModuleScript") do
@@ -302,6 +305,7 @@ function TagBehaviorService.registerFolder(
 		local tag: string
 		local factory: (instance: Instance) -> (() -> ())?
 		local predicate: ((instance: Instance) -> boolean)? = nil
+		local update: ((instance: Instance, dt: number) -> ())? = nil
 
 		if type(result) == "function" then
 			tag = child.Name
@@ -311,6 +315,7 @@ function TagBehaviorService.registerFolder(
 			tag = def.tag or child.Name
 			factory = def.factory
 			predicate = def.predicate
+			update = def.update
 
 			if type(factory) ~= "function" then
 				warn(`[TagBehaviorService] {child:GetFullName()} must export a factory function`)
@@ -321,7 +326,7 @@ function TagBehaviorService.registerFolder(
 			continue
 		end
 
-		table.insert(unsubs, self:subscribe(tag, factory, predicate))
+		table.insert(unsubs, self:subscribe(tag, factory, predicate, update))
 	end
 
 	local unregistered = false
@@ -388,6 +393,77 @@ function TagBehaviorService.getActiveCount(self: TagBehaviorService, tag: string
 	end
 
 	return count
+end
+
+--[=[
+	Calls the `update` function for every active context whose subscription
+	has an update. The consumer is responsible for calling this at the
+	desired frequency (e.g. from `RunService.Heartbeat`).
+]=]
+function TagBehaviorService.updateAll(self: TagBehaviorService, dt: number)
+	for _, subs in self._tagSubs do
+		for _, sub in subs do
+			if sub.update then
+				for instance in sub.contexts do
+					local ok, err = pcall(sub.update, instance, dt)
+					if not ok then
+						reportError("update", sub.tag, instance, tostring(err))
+					end
+				end
+			end
+		end
+	end
+end
+
+--[=[
+	Calls the `update` function for every active context under the given tag.
+	Safe to call on tags with no update function (no-op).
+]=]
+function TagBehaviorService.updateTag(self: TagBehaviorService, tag: string, dt: number)
+	local subs = self._tagSubs[tag]
+	if not subs then
+		return
+	end
+
+	for _, sub in subs do
+		if sub.update then
+			for instance in sub.contexts do
+				local ok, err = pcall(sub.update, instance, dt)
+				if not ok then
+					reportError("update", sub.tag, instance, tostring(err))
+				end
+			end
+		end
+	end
+end
+
+--[=[
+	Returns a list of all tags that have at least one subscription.
+]=]
+function TagBehaviorService.getRegisteredTags(self: TagBehaviorService): { string }
+	local tags: { string } = {}
+	for tag in self._tagSubs do
+		table.insert(tags, tag)
+	end
+	return tags
+end
+
+--[=[
+	Returns `true` if any subscription for the given tag has an `update` function.
+]=]
+function TagBehaviorService.hasUpdate(self: TagBehaviorService, tag: string): boolean
+	local subs = self._tagSubs[tag]
+	if not subs then
+		return false
+	end
+
+	for _, sub in subs do
+		if sub.update then
+			return true
+		end
+	end
+
+	return false
 end
 
 return TagBehaviorService.new()
