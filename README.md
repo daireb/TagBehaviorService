@@ -27,7 +27,7 @@ TagBehaviorService:start()
 ### pesde
 
 ```sh
-pesde add gh#daireb/tagbehaviorservice#v0.4.0
+pesde add gh#daireb/tagbehaviorservice#v0.4.1
 ```
 
 ### Manual
@@ -100,9 +100,6 @@ Behaviors can also define an `update` function for per-frame logic:
 ```luau
 -- Behaviors/Spinner.luau
 return {
-    factory = function(part)
-        return nil
-    end,
     update = function(part, dt)
         part.CFrame *= CFrame.Angles(0, math.rad(90) * dt, 0)
     end,
@@ -120,14 +117,14 @@ end)
 
 ## API Reference
 
-### `:subscribe(tag, factory, predicate?, update?) -> unsubscribeFn`
+### `:subscribe(tag, factory?, predicate?, update?) -> unsubscribeFn`
 
-Registers a behavior factory for the given tag.
+Registers a behavior for the given tag. At least one of `factory` or `update` should be provided.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tag` | `string` | CollectionService tag name |
-| `factory` | `(instance: Instance) -> (() -> ())?` | Called once per matching instance; may return a cleanup function |
+| `factory` | `((instance: Instance) -> (() -> ())?)?` | Optional; called once per matching instance, may return a cleanup function |
 | `predicate` | `((instance: Instance) -> boolean)?` | Optional filter; errors are caught and warned |
 | `update` | `((instance: Instance, dt: number) -> ())?` | Optional per-frame callback; called with `dt=0` on attach, then via `updateAll`/`updateTag` |
 
@@ -144,7 +141,7 @@ Each module should return either a **factory function** (tag defaults to `Module
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `tag` | `string?` | Module name | Override the tag name |
-| `factory` | `(Instance) -> (() -> ())?` | *required* | The behavior factory |
+| `factory` | `((Instance) -> (() -> ())?)?` | `nil` | The behavior factory |
 | `predicate` | `((Instance) -> boolean)?` | `nil` | Optional filter |
 | `update` | `((Instance, dt: number) -> ())?` | `nil` | Optional per-frame callback |
 

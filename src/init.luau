@@ -15,7 +15,7 @@ local CollectionService = game:GetService("CollectionService")
 
 export type BehaviorDefinition = {
 	tag: string?,
-	factory: (instance: Instance) -> (() -> ())?,
+	factory: ((instance: Instance) -> (() -> ())?)?,
 	predicate: ((instance: Instance) -> boolean)?,
 	update: ((instance: Instance, dt: number) -> ())?,
 }
@@ -31,7 +31,7 @@ type Context = {
 
 type Subscription = {
 	tag: string,
-	factory: (instance: Instance) -> (() -> ())?,
+	factory: ((instance: Instance) -> (() -> ())?)?,
 	predicate: ((instance: Instance) -> boolean)?,
 	update: ((instance: Instance, dt: number) -> ())?,
 	contexts: { [Instance]: Context },
@@ -60,6 +60,10 @@ local function passesPredicate(sub: Subscription, instance: Instance): boolean
 end
 
 local function runFactory(sub: Subscription, instance: Instance, context: Context)
+	if not sub.factory then
+		return
+	end
+
 	local ok, result = pcall(sub.factory, instance)
 
 	-- Context may have been removed during factory execution (reentrant unsubscribe)
@@ -203,11 +207,12 @@ end
 -- Public API
 
 --[=[
-	Subscribes a tag to a factory callback. When the service is started,
-	every current and future instance with the given tag will have the
-	factory invoked. The factory may return an optional cleanup function
-	that runs when the tag is removed, the instance is destroyed, or the
-	subscription is cancelled.
+	Subscribes a tag to a behavior. At least one of `factory` or `update`
+	should be provided; a subscription with neither will warn and do nothing.
+
+	The factory runs once per matching instance and may return a cleanup
+	function. The update runs on attach (with dt=0) and on each
+	`updateAll`/`updateTag` call.
 
 	An optional predicate filters which tagged instances are eligible.
 
@@ -216,12 +221,15 @@ end
 function TagBehaviorService.subscribe(
 	self: TagBehaviorService,
 	tag: string,
-	factory: (instance: Instance) -> (() -> ())?,
+	factory: ((instance: Instance) -> (() -> ())?)?,
 	predicate: ((instance: Instance) -> boolean)?,
 	update: ((instance: Instance, dt: number) -> ())?
 ): () -> ()
 	assert(type(tag) == "string" and #tag > 0, "Tag must be a non-empty string")
-	assert(type(factory) == "function", "Factory must be a function")
+
+	if factory == nil and update == nil then
+		warn(`[TagBehaviorService] Subscription for tag "{tag}" has no factory or update and will do nothing`)
+	end
 
 	local sub: Subscription = {
 		tag = tag,
@@ -303,7 +311,7 @@ function TagBehaviorService.registerFolder(self: TagBehaviorService, folder: Ins
 		end
 
 		local tag: string
-		local factory: (instance: Instance) -> (() -> ())?
+		local factory: ((instance: Instance) -> (() -> ())?)? = nil
 		local predicate: ((instance: Instance) -> boolean)? = nil
 		local update: ((instance: Instance, dt: number) -> ())? = nil
 
@@ -317,8 +325,8 @@ function TagBehaviorService.registerFolder(self: TagBehaviorService, folder: Ins
 			predicate = def.predicate
 			update = def.update
 
-			if type(factory) ~= "function" then
-				warn(`[TagBehaviorService] {child:GetFullName()} must export a factory function`)
+			if factory ~= nil and type(factory) ~= "function" then
+				warn(`[TagBehaviorService] {child:GetFullName()} factory must be a function or nil, got {type(factory)}`)
 				continue
 			end
 		else

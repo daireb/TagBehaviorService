@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hasUpdate(tag)` — returns whether any subscription for a tag has an `update` function.
 - Initial update on attach: when a subscription has `update`, it is called with `dt=0` immediately after the factory runs, preventing one-frame flicker.
 
+## [0.4.1] - 2026-04-02
+
+### Changed
+
+- `factory` is now optional in both `subscribe()` and `BehaviorDefinition`. A subscription with only an `update` function (and no factory) is valid. A subscription with neither will warn.
+
 ## [0.3.0] - 2026-03-02
 
 ### Changed

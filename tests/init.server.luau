@@ -874,6 +874,29 @@ test("updateTag is a no-op for tags with no update", function()
 	part:Destroy()
 end)
 
+-- 29. Update-only subscription (no factory) --------------------------------
+
+test("update-only subscription works without factory", function()
+	local tag = uniqueTag()
+	local part = makePart(tag)
+
+	local updateCalls = 0
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(tag, nil, nil, function(_instance, _dt)
+		updateCalls += 1
+	end)
+	tbs:start()
+
+	expectEqual(updateCalls, 1, "on-attach update")
+	expect(tbs:isActive(tag, part), "should be active")
+
+	tbs:updateAll(0.1)
+	expectEqual(updateCalls, 2, "after updateAll")
+
+	unsub()
+	part:Destroy()
+end)
+
 -- ---------------------------------------------------------------------------
 -- Summary
 -- ---------------------------------------------------------------------------
