@@ -27,7 +27,7 @@ TagBehaviorService:start()
 ### pesde
 
 ```sh
-pesde add gh#daireb/tagbehaviorservice#v0.4.1
+pesde add gh#daireb/tagbehaviorservice#v0.5.0
 ```
 
 ### Manual
@@ -40,16 +40,19 @@ Drop `src/init.luau` into your project and `require` it.
 local TagBehaviorService = require(game.ReplicatedStorage.Packages.TagBehaviorService)
 
 -- Register behaviors before starting
-TagBehaviorService:subscribe("Glowing", function(part)
-    local light = Instance.new("PointLight")
-    light.Parent = part
+TagBehaviorService:subscribe("Glowing", {
+    factory = function(part)
+        local light = Instance.new("PointLight")
+        light.Parent = part
 
-    return function()
-        light:Destroy()
-    end
-end, function(instance)
-    return instance:IsA("BasePart")
-end)
+        return function()
+            light:Destroy()
+        end
+    end,
+    filter = function(instance)
+        return instance:IsA("BasePart")
+    end,
+})
 
 -- Start listening for tagged instances
 TagBehaviorService:start()
@@ -77,12 +80,12 @@ return function(part)
 end
 ```
 
-Or a table for a custom tag name, predicate, or update function:
+Or a table for a custom tag name, filter, or update function:
 
 ```luau
 -- Behaviors/Glowing.luau
 return {
-    predicate = function(instance)
+    filter = function(instance)
         return instance:IsA("BasePart")
     end,
     factory = function(part)
@@ -117,24 +120,36 @@ end)
 
 ## API Reference
 
-### `:subscribe(tag, factory?, predicate?, update?) -> unsubscribeFn`
+### `:subscribe(tag, config?) -> unsubscribeFn`
 
-Registers a behavior for the given tag. At least one of `factory` or `update` should be provided.
+Registers a behavior for the given tag.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `tag` | `string` | CollectionService tag name |
-| `factory` | `((instance: Instance) -> (() -> ())?)?` | Optional; called once per matching instance, may return a cleanup function |
-| `predicate` | `((instance: Instance) -> boolean)?` | Optional filter; errors are caught and warned |
-| `update` | `((instance: Instance, dt: number) -> ())?` | Optional per-frame callback; called with `dt=0` on attach, then via `updateAll`/`updateTag` |
+The second argument can be:
+- A **function** — treated as the factory (shorthand for simple behaviors)
+- A **table** `{ factory?, filter?, update? }` — for complex behaviors
+- **nil** — warns about an empty subscription
+
+| Table Field | Type | Description |
+|-------------|------|-------------|
+| `factory` | `((Instance) -> (() -> ())?)?` | Called once per matching instance; may return a cleanup function |
+| `filter` | `((Instance) -> boolean)?` | Optional instance filter; errors are caught and warned |
+| `update` | `((Instance, dt: number) -> ())?` | Optional per-frame callback; called with `dt=0` on attach, then via `updateAll`/`updateTag` |
 
 **Returns** an idempotent `() -> ()` unsubscribe function. Calling it tears down all active contexts for this subscription and disconnects signals.
 
 ---
 
-### `:registerFolder(folder) -> unsubscribeAllFn`
+### `:registerFolder(folder, moduleFilter?) -> unsubscribeAllFn`
 
 Requires every descendant `ModuleScript` in `folder` and subscribes each one.
+
+An optional `moduleFilter` receives each `ModuleScript` before it is required and returns a boolean. Modules that fail the filter are skipped entirely (not even required):
+
+```luau
+TBS:registerFolder(script.Behaviors, function(module)
+    return module:GetAttribute("RunContext") == "Server"
+end)
+```
 
 Each module should return either a **factory function** (tag defaults to `ModuleScript.Name`) or a **`BehaviorDefinition` table**:
 
@@ -142,7 +157,7 @@ Each module should return either a **factory function** (tag defaults to `Module
 |-------|------|---------|-------------|
 | `tag` | `string?` | Module name | Override the tag name |
 | `factory` | `((Instance) -> (() -> ())?)?` | `nil` | The behavior factory |
-| `predicate` | `((Instance) -> boolean)?` | `nil` | Optional filter |
+| `filter` | `((Instance) -> boolean)?` | `nil` | Optional instance filter |
 | `update` | `((Instance, dt: number) -> ())?` | `nil` | Optional per-frame callback |
 
 **Returns** an idempotent function that unsubscribes all behaviors from this folder.
@@ -206,7 +221,7 @@ Returns `true` if any subscription for the given tag has an `update` function. U
 ## Lifecycle Semantics
 
 ```
-subscribe(tag, factory, predicate?, update?)
+subscribe(tag, { factory?, filter?, update? })
         |
     start()
         |
@@ -216,11 +231,11 @@ subscribe(tag, factory, predicate?, update?)
   |   GetInstanceAddedSignal(tag) fires
   |                |
   v                v
-  predicate? ---false--> skip
+  filter? ---false--> skip
         |
        true
         |
-  factory(instance) --> cleanup?
+  factory?(instance) --> cleanup?
         |
   update?(instance, 0)    <-- initial update on attach
         |
@@ -243,7 +258,7 @@ subscribe(tag, factory, predicate?, update?)
 
 - **Exactly one context per (tag, instance)** — duplicate add signals are idempotent.
 - **At-most-once cleanup** — once cleanup runs (or the context is removed), it will never run again for that activation.
-- **Error isolation** — a throwing factory, cleanup, or predicate is caught with `pcall` and logged via `warn`. Other subscriptions and instances are unaffected.
+- **Error isolation** — a throwing factory, cleanup, or filter is caught with `pcall` and logged via `warn`. Other subscriptions and instances are unaffected.
 - **Destroy safety** — if an instance is destroyed without an explicit untag, the `Destroying` event triggers cleanup.
 - **Idempotent calls** — `start` and unsubscribe functions are safe to call multiple times.
 
@@ -280,47 +295,53 @@ subscribe(tag, factory, predicate?, update?)
 ### Simple BasePart behavior
 
 ```luau
-TagBehaviorService:subscribe("Bouncy", function(part)
-    local original = part.CustomPhysicalProperties
+TagBehaviorService:subscribe("Bouncy", {
+    factory = function(part)
+        local original = part.CustomPhysicalProperties
 
-    part.CustomPhysicalProperties = PhysicalProperties.new(
-        0.7,  -- density
-        0.3,  -- friction
-        1.0,  -- elasticity
-        1.0,  -- friction weight
-        1.0   -- elasticity weight
-    )
+        part.CustomPhysicalProperties = PhysicalProperties.new(
+            0.7,  -- density
+            0.3,  -- friction
+            1.0,  -- elasticity
+            1.0,  -- friction weight
+            1.0   -- elasticity weight
+        )
 
-    return function()
-        part.CustomPhysicalProperties = original
-    end
-end, function(instance)
-    return instance:IsA("BasePart")
-end)
+        return function()
+            part.CustomPhysicalProperties = original
+        end
+    end,
+    filter = function(instance)
+        return instance:IsA("BasePart")
+    end,
+})
 ```
 
 ### Behavior with attribute check
 
 ```luau
-TagBehaviorService:subscribe("NPC", function(model)
-    local billboard = Instance.new("BillboardGui")
-    billboard.Size = UDim2.fromOffset(100, 40)
-    billboard.Adornee = model:FindFirstChild("Head")
-    billboard.Parent = model
+TagBehaviorService:subscribe("NPC", {
+    factory = function(model)
+        local billboard = Instance.new("BillboardGui")
+        billboard.Size = UDim2.fromOffset(100, 40)
+        billboard.Adornee = model:FindFirstChild("Head")
+        billboard.Parent = model
 
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.fromScale(1, 1)
-    label.BackgroundTransparency = 1
-    label.Text = model.Name
-    label.TextColor3 = Color3.new(1, 1, 1)
-    label.Parent = billboard
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Text = model.Name
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.Parent = billboard
 
-    return function()
-        billboard:Destroy()
-    end
-end, function(model)
-    return model:IsA("Model") and model:FindFirstChild("Head") ~= nil
-end)
+        return function()
+            billboard:Destroy()
+        end
+    end,
+    filter = function(model)
+        return model:IsA("Model") and model:FindFirstChild("Head") ~= nil
+    end,
+})
 ```
 
 ### Behavior with per-frame update
@@ -328,18 +349,22 @@ end)
 ```luau
 local states = {}
 
-TagBehaviorService:subscribe("Spinner", function(part)
-    states[part] = { angle = 0 }
-    return function()
-        states[part] = nil
-    end
-end, function(instance)
-    return instance:IsA("BasePart")
-end, function(part, dt)
-    local state = states[part]
-    state.angle += math.rad(90) * dt
-    part.CFrame = CFrame.new(part.Position) * CFrame.Angles(0, state.angle, 0)
-end)
+TagBehaviorService:subscribe("Spinner", {
+    factory = function(part)
+        states[part] = { angle = 0 }
+        return function()
+            states[part] = nil
+        end
+    end,
+    filter = function(instance)
+        return instance:IsA("BasePart")
+    end,
+    update = function(part, dt)
+        local state = states[part]
+        state.angle += math.rad(90) * dt
+        part.CFrame = CFrame.new(part.Position) * CFrame.Angles(0, state.angle, 0)
+    end,
+})
 
 -- Drive updates from Heartbeat
 local RunService = game:GetService("RunService")
@@ -353,23 +378,26 @@ end)
 ```luau
 local Janitor = require(path.to.Janitor)
 
-TagBehaviorService:subscribe("InteractableChest", function(chest)
-    local janitor = Janitor.new()
+TagBehaviorService:subscribe("InteractableChest", {
+    factory = function(chest)
+        local janitor = Janitor.new()
 
-    local prompt = janitor:Add(Instance.new("ProximityPrompt"))
-    prompt.ActionText = "Open"
-    prompt.Parent = chest
+        local prompt = janitor:Add(Instance.new("ProximityPrompt"))
+        prompt.ActionText = "Open"
+        prompt.Parent = chest
 
-    janitor:Add(prompt.Triggered:Connect(function(player)
-        print(player.Name, "opened", chest.Name)
-    end))
+        janitor:Add(prompt.Triggered:Connect(function(player)
+            print(player.Name, "opened", chest.Name)
+        end))
 
-    return function()
-        janitor:Destroy()
-    end
-end, function(instance)
-    return instance:IsA("Model")
-end)
+        return function()
+            janitor:Destroy()
+        end
+    end,
+    filter = function(instance)
+        return instance:IsA("Model")
+    end,
+})
 ```
 
 ## Testing
@@ -383,16 +411,18 @@ The test suite lives in `tests/init.server.luau` and runs inside a Roblox DataMo
 - Duplicate signal idempotency
 - Re-attach after remove + re-add
 - Unsubscribe behaviour and idempotency
-- Error isolation (factory, cleanup, predicate)
-- Predicate filtering (by class, by name)
+- Error isolation (factory, cleanup, filter)
+- Filter filtering (by class, by name)
 - `getActiveCount` and introspection helpers
 - At-most-once cleanup guarantee
 - Factory return-type validation
 - Multiple subscriptions per tag
 - Update on attach (dt=0), `updateAll`, and `updateTag`
 - Update error isolation
-- Update not called for predicate-filtered or unsubscribed instances
+- Update not called for filter-excluded or unsubscribed instances
 - `getRegisteredTags` and `hasUpdate` introspection
+- Subscribe with function shorthand and table config
+- `registerFolder` module filter
 
 ## License
 

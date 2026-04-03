@@ -16,13 +16,13 @@ local CollectionService = game:GetService("CollectionService")
 export type BehaviorDefinition = {
 	tag: string?,
 	factory: ((instance: Instance) -> (() -> ())?)?,
-	predicate: ((instance: Instance) -> boolean)?,
+	filter: ((instance: Instance) -> boolean)?,
 	update: ((instance: Instance, dt: number) -> ())?,
 }
 
 -- Internal types
 
-type ErrorPhase = "factory" | "cleanup" | "predicate" | "update"
+type ErrorPhase = "factory" | "cleanup" | "filter" | "update"
 
 type Context = {
 	cleanup: (() -> ())?,
@@ -32,7 +32,7 @@ type Context = {
 type Subscription = {
 	tag: string,
 	factory: ((instance: Instance) -> (() -> ())?)?,
-	predicate: ((instance: Instance) -> boolean)?,
+	filter: ((instance: Instance) -> boolean)?,
 	update: ((instance: Instance, dt: number) -> ())?,
 	contexts: { [Instance]: Context },
 	addedConn: RBXScriptConnection?,
@@ -45,15 +45,15 @@ local function reportError(phase: ErrorPhase, tag: string, instance: Instance, e
 	warn(`[TagBehaviorService] {phase} error for tag "{tag}" on {instance:GetFullName()}: {err}`)
 end
 
-local function passesPredicate(sub: Subscription, instance: Instance): boolean
-	local predicate = sub.predicate
-	if predicate == nil then
+local function passesFilter(sub: Subscription, instance: Instance): boolean
+	local filter = sub.filter
+	if filter == nil then
 		return true
 	end
 
-	local ok, result = pcall(predicate, instance)
+	local ok, result = pcall(filter, instance)
 	if not ok then
-		reportError("predicate", sub.tag, instance, tostring(result))
+		reportError("filter", sub.tag, instance, tostring(result))
 		return false
 	end
 	return result == true
@@ -100,7 +100,7 @@ local function cleanupContext(sub: Subscription, instance: Instance)
 
 	local cleanup = context.cleanup
 	if cleanup ~= nil then
-		local ok, err = pcall(cleanup)
+		local ok, err = pcall(cleanup :: any)
 		if not ok then
 			reportError("cleanup", sub.tag, instance, tostring(err))
 		end
@@ -154,7 +154,7 @@ local function attachInstance(sub: Subscription, instance: Instance)
 		return
 	end
 
-	if not passesPredicate(sub, instance) then
+	if not passesFilter(sub, instance) then
 		return
 	end
 
@@ -171,7 +171,7 @@ local function attachInstance(sub: Subscription, instance: Instance)
 	runFactory(sub, instance, context)
 
 	if sub.update and sub.contexts[instance] == context then
-		local ok, err = pcall(sub.update, instance, 0)
+		local ok, err = pcall(sub.update :: any, instance, 0)
 		if not ok then
 			reportError("update", sub.tag, instance, tostring(err))
 		end
@@ -207,25 +207,34 @@ end
 -- Public API
 
 --[=[
-	Subscribes a tag to a behavior. At least one of `factory` or `update`
-	should be provided; a subscription with neither will warn and do nothing.
+	Subscribes a tag to a behavior.
 
-	The factory runs once per matching instance and may return a cleanup
-	function. The update runs on attach (with dt=0) and on each
-	`updateAll`/`updateTag` call.
-
-	An optional predicate filters which tagged instances are eligible.
+	The second argument can be:
+	- A **function** — treated as the factory (shorthand for simple behaviors)
+	- A **table** `{ factory?, filter?, update? }` — for complex behaviors
+	- **nil** — warns about an empty subscription
 
 	Returns an idempotent unsubscribe function.
 ]=]
 function TagBehaviorService.subscribe(
 	self: TagBehaviorService,
 	tag: string,
-	factory: ((instance: Instance) -> (() -> ())?)?,
-	predicate: ((instance: Instance) -> boolean)?,
-	update: ((instance: Instance, dt: number) -> ())?
+	config: ((instance: Instance) -> (() -> ())?) | BehaviorDefinition | nil
 ): () -> ()
 	assert(type(tag) == "string" and #tag > 0, "Tag must be a non-empty string")
+
+	local factory: ((instance: Instance) -> (() -> ())?)? = nil
+	local filter: ((instance: Instance) -> boolean)? = nil
+	local update: ((instance: Instance, dt: number) -> ())? = nil
+
+	if type(config) == "function" then
+		factory = config :: (instance: Instance) -> (() -> ())?
+	elseif type(config) == "table" then
+		local def = config :: BehaviorDefinition
+		factory = def.factory
+		filter = def.filter
+		update = def.update
+	end
 
 	if factory == nil and update == nil then
 		warn(`[TagBehaviorService] Subscription for tag "{tag}" has no factory or update and will do nothing`)
@@ -234,7 +243,7 @@ function TagBehaviorService.subscribe(
 	local sub: Subscription = {
 		tag = tag,
 		factory = factory,
-		predicate = predicate,
+		filter = filter,
 		update = update,
 		contexts = {},
 		addedConn = nil,
@@ -294,16 +303,35 @@ end
 
 	Each module should return either:
 	- A factory function (tag defaults to `ModuleScript.Name`)
-	- A `BehaviorDefinition` table with a `factory` field and optional
-	  `tag`, `predicate`, and `update` fields.
+	- A `BehaviorDefinition` table with optional `factory`, `filter`,
+	  `update`, and `tag` fields.
+
+	An optional `moduleFilter` receives each `ModuleScript` before it is
+	required and returns a boolean. Modules that fail the filter are
+	skipped entirely.
 
 	Returns an idempotent function that unsubscribes all behaviors
 	registered from this folder.
 ]=]
-function TagBehaviorService.registerFolder(self: TagBehaviorService, folder: Instance): () -> ()
+function TagBehaviorService.registerFolder(
+	self: TagBehaviorService,
+	folder: Instance,
+	moduleFilter: ((module: ModuleScript) -> boolean)?
+): () -> ()
 	local unsubs: { () -> () } = {}
 
 	for _, child in folder:QueryDescendants("ModuleScript") do
+		if moduleFilter then
+			local filterOk, filterResult = pcall(moduleFilter, child)
+			if not filterOk then
+				warn(`[TagBehaviorService] Module filter error for {child:GetFullName()}: {tostring(filterResult)}`)
+				continue
+			end
+			if filterResult ~= true then
+				continue
+			end
+		end
+
 		local ok, result = pcall(require, child)
 		if not ok then
 			warn(`[TagBehaviorService] Failed to require {child:GetFullName()}: {tostring(result)}`)
@@ -311,30 +339,30 @@ function TagBehaviorService.registerFolder(self: TagBehaviorService, folder: Ins
 		end
 
 		local tag: string
-		local factory: ((instance: Instance) -> (() -> ())?)? = nil
-		local predicate: ((instance: Instance) -> boolean)? = nil
-		local update: ((instance: Instance, dt: number) -> ())? = nil
 
 		if type(result) == "function" then
 			tag = child.Name
-			factory = result
+			table.insert(unsubs, self:subscribe(tag, result))
 		elseif type(result) == "table" then
 			local def = result :: BehaviorDefinition
 			tag = def.tag or child.Name
-			factory = def.factory
-			predicate = def.predicate
-			update = def.update
 
-			if factory ~= nil and type(factory) ~= "function" then
-				warn(`[TagBehaviorService] {child:GetFullName()} factory must be a function or nil, got {type(factory)}`)
+			if def.factory ~= nil and type(def.factory) ~= "function" then
+				warn(
+					string.format(
+						"[TagBehaviorService] %s factory must be a function or nil, got %s",
+						child:GetFullName(),
+						type(def.factory)
+					)
+				)
 				continue
 			end
+
+			table.insert(unsubs, self:subscribe(tag, def))
 		else
 			warn(`[TagBehaviorService] {child:GetFullName()} must return a function or table, got {type(result)}`)
 			continue
 		end
-
-		table.insert(unsubs, self:subscribe(tag, factory, predicate, update))
 	end
 
 	local unregistered = false
@@ -413,7 +441,7 @@ function TagBehaviorService.updateAll(self: TagBehaviorService, dt: number)
 		for _, sub in subs do
 			if sub.update then
 				for instance in sub.contexts do
-					local ok, err = pcall(sub.update, instance, dt)
+					local ok, err = pcall(sub.update :: any, instance, dt)
 					if not ok then
 						reportError("update", sub.tag, instance, tostring(err))
 					end
@@ -436,7 +464,7 @@ function TagBehaviorService.updateTag(self: TagBehaviorService, tag: string, dt:
 	for _, sub in subs do
 		if sub.update then
 			for instance in sub.contexts do
-				local ok, err = pcall(sub.update, instance, dt)
+				local ok, err = pcall(sub.update :: any, instance, dt)
 				if not ok then
 					reportError("update", sub.tag, instance, tostring(err))
 				end

@@ -5,6 +5,14 @@ All notable changes to TagBehaviorService will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-02
+
+### Changed
+
+- **Breaking:** `predicate` renamed to `filter` everywhere — `BehaviorDefinition.filter`, `ErrorPhase "filter"`, and all internal references.
+- **Breaking:** `subscribe(tag, factory?, predicate?, update?)` is now `subscribe(tag, config?)`. The second argument can be a function (shorthand for factory), a `BehaviorDefinition` table `{ factory?, filter?, update? }`, or nil.
+- `registerFolder(folder, moduleFilter?)` — added optional `moduleFilter` parameter. Receives each `ModuleScript` before it is required; modules that fail the filter are skipped entirely.
+
 ## [0.4.0] - 2026-04-02
 
 ### Added

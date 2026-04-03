@@ -301,9 +301,9 @@ test("cleanup error does not crash the service", function()
 	part:Destroy()
 end)
 
--- 10. Predicate filters instances (IsA example) ---------------------------
+-- 10. Filter filters instances (IsA example) ------------------------------
 
-test("predicate filters instances by class", function()
+test("filter filters instances by class", function()
 	local tag = uniqueTag()
 
 	local folder = Instance.new("Folder")
@@ -314,12 +314,15 @@ test("predicate filters instances by class", function()
 
 	local attachedInstances: { Instance } = {}
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(instance)
-		table.insert(attachedInstances, instance)
-		return nil
-	end, function(instance)
-		return instance:IsA("BasePart")
-	end)
+	local unsub = tbs:subscribe(tag, {
+		factory = function(instance)
+			table.insert(attachedInstances, instance)
+			return nil
+		end,
+		filter = function(instance)
+			return instance:IsA("BasePart")
+		end,
+	})
 	tbs:start()
 
 	expectEqual(#attachedInstances, 1, "only BasePart attached")
@@ -330,9 +333,9 @@ test("predicate filters instances by class", function()
 	part:Destroy()
 end)
 
--- 11. Predicate filters by name -------------------------------------------
+-- 11. Filter filters by name ---------------------------------------------
 
-test("predicate filters by instance name", function()
+test("filter filters by instance name", function()
 	local tag = uniqueTag()
 	local partA = makePart(tag)
 	partA.Name = "Allow"
@@ -341,12 +344,15 @@ test("predicate filters by instance name", function()
 
 	local attached: { string } = {}
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(instance)
-		table.insert(attached, instance.Name)
-		return nil
-	end, function(instance)
-		return instance.Name == "Allow"
-	end)
+	local unsub = tbs:subscribe(tag, {
+		factory = function(instance)
+			table.insert(attached, instance.Name)
+			return nil
+		end,
+		filter = function(instance)
+			return instance.Name == "Allow"
+		end,
+	})
 	tbs:start()
 
 	expectEqual(#attached, 1, "count")
@@ -357,23 +363,26 @@ test("predicate filters by instance name", function()
 	partB:Destroy()
 end)
 
--- 12. Predicate error is isolated -----------------------------------------
+-- 12. Filter error is isolated -------------------------------------------
 
-test("predicate error skips instance without crashing", function()
+test("filter error skips instance without crashing", function()
 	local tag = uniqueTag()
 	local part = makePart(tag)
 
 	local attachCount = 0
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(_instance)
-		attachCount += 1
-		return nil
-	end, function(_instance)
-		error("predicate fail")
-	end)
+	local unsub = tbs:subscribe(tag, {
+		factory = function(_instance)
+			attachCount += 1
+			return nil
+		end,
+		filter = function(_instance)
+			error("filter fail")
+		end,
+	})
 	tbs:start()
 
-	expectEqual(attachCount, 0, "should not attach when predicate errors")
+	expectEqual(attachCount, 0, "should not attach when filter errors")
 
 	unsub()
 	part:Destroy()
@@ -539,16 +548,14 @@ test("update is called on attach with dt=0", function()
 
 	local updateCalls: { { Instance | number } } = {}
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(
-		tag,
-		function(_instance)
+	local unsub = tbs:subscribe(tag, {
+		factory = function(_instance)
 			return nil
 		end,
-		nil,
-		function(instance, dt)
+		update = function(instance, dt)
 			table.insert(updateCalls, { instance, dt })
-		end
-	)
+		end,
+	})
 	tbs:start()
 
 	expectEqual(#updateCalls, 1, "update call count")
@@ -570,28 +577,18 @@ test("updateAll calls update for all active instances", function()
 	local updateCount = 0
 	local lastDt = 0
 	local tbs = TBS.new()
-	local unsub1 = tbs:subscribe(
-		tagA,
-		function(_instance)
-			return nil
-		end,
-		nil,
-		function(_instance, dt)
+	local unsub1 = tbs:subscribe(tagA, {
+		update = function(_instance, dt)
 			updateCount += 1
 			lastDt = dt
-		end
-	)
-	local unsub2 = tbs:subscribe(
-		tagB,
-		function(_instance)
-			return nil
 		end,
-		nil,
-		function(_instance, dt)
+	})
+	local unsub2 = tbs:subscribe(tagB, {
+		update = function(_instance, dt)
 			updateCount += 1
 			lastDt = dt
-		end
-	)
+		end,
+	})
 	tbs:start()
 
 	-- Reset after initial on-attach updates
@@ -620,26 +617,16 @@ test("updateTag only updates the specified tag", function()
 	local countA = 0
 	local countB = 0
 	local tbs = TBS.new()
-	local unsub1 = tbs:subscribe(
-		tagA,
-		function(_instance)
-			return nil
-		end,
-		nil,
-		function(_instance, _dt)
+	local unsub1 = tbs:subscribe(tagA, {
+		update = function(_instance, _dt)
 			countA += 1
-		end
-	)
-	local unsub2 = tbs:subscribe(
-		tagB,
-		function(_instance)
-			return nil
 		end,
-		nil,
-		function(_instance, _dt)
+	})
+	local unsub2 = tbs:subscribe(tagB, {
+		update = function(_instance, _dt)
 			countB += 1
-		end
-	)
+		end,
+	})
 	tbs:start()
 
 	-- Reset after initial on-attach updates
@@ -667,26 +654,16 @@ test("update error does not crash other updates", function()
 
 	local goodUpdateCount = 0
 	local tbs = TBS.new()
-	local unsub1 = tbs:subscribe(
-		tagBad,
-		function(_instance)
-			return nil
-		end,
-		nil,
-		function(_instance, _dt)
+	local unsub1 = tbs:subscribe(tagBad, {
+		update = function(_instance, _dt)
 			error("update boom")
-		end
-	)
-	local unsub2 = tbs:subscribe(
-		tagGood,
-		function(_instance)
-			return nil
 		end,
-		nil,
-		function(_instance, _dt)
+	})
+	local unsub2 = tbs:subscribe(tagGood, {
+		update = function(_instance, _dt)
 			goodUpdateCount += 1
-		end
-	)
+		end,
+	})
 	tbs:start()
 
 	-- Reset after initial on-attach updates (bad one errored, good one ran)
@@ -702,9 +679,9 @@ test("update error does not crash other updates", function()
 	partGood:Destroy()
 end)
 
--- 23. Update not called for instances that fail predicate -------------------
+-- 23. Update not called for instances that fail filter ---------------------
 
-test("update not called for instances filtered by predicate", function()
+test("update not called for instances filtered by filter", function()
 	local tag = uniqueTag()
 	local folder = Instance.new("Folder")
 	folder.Parent = workspace
@@ -714,13 +691,14 @@ test("update not called for instances filtered by predicate", function()
 
 	local updateInstances: { Instance } = {}
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, function(_instance)
-		return nil
-	end, function(instance)
-		return instance:IsA("BasePart")
-	end, function(instance, _dt)
-		table.insert(updateInstances, instance)
-	end)
+	local unsub = tbs:subscribe(tag, {
+		filter = function(instance)
+			return instance:IsA("BasePart")
+		end,
+		update = function(instance, _dt)
+			table.insert(updateInstances, instance)
+		end,
+	})
 	tbs:start()
 
 	-- On-attach update should only fire for the part
@@ -747,16 +725,11 @@ test("update not called after unsubscribe", function()
 
 	local updateCount = 0
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(
-		tag,
-		function(_instance)
-			return nil
-		end,
-		nil,
-		function(_instance, _dt)
+	local unsub = tbs:subscribe(tag, {
+		update = function(_instance, _dt)
 			updateCount += 1
-		end
-	)
+		end,
+	})
 	tbs:start()
 
 	-- Reset after on-attach
@@ -771,7 +744,7 @@ end)
 
 -- 25. Subscribe without update works unchanged (backwards compat) ----------
 
-test("subscribe without update works unchanged", function()
+test("subscribe with function shorthand works", function()
 	local tag = uniqueTag()
 	local part = makePart(tag)
 
@@ -783,7 +756,7 @@ test("subscribe without update works unchanged", function()
 	end)
 	tbs:start()
 
-	expect(attached, "should attach without update param")
+	expect(attached, "should attach with function shorthand")
 
 	tbs:updateAll(0.1)
 
@@ -835,9 +808,9 @@ test("hasUpdate returns true/false correctly", function()
 	local tbs = TBS.new()
 	expect(not tbs:hasUpdate(tagWithUpdate), "false for unregistered tag")
 
-	local unsub1 = tbs:subscribe(tagWithUpdate, function(_instance)
-		return nil
-	end, nil, function(_instance, _dt) end)
+	local unsub1 = tbs:subscribe(tagWithUpdate, {
+		update = function(_instance, _dt) end,
+	})
 
 	local unsub2 = tbs:subscribe(tagWithout, function(_instance)
 		return nil
@@ -882,9 +855,11 @@ test("update-only subscription works without factory", function()
 
 	local updateCalls = 0
 	local tbs = TBS.new()
-	local unsub = tbs:subscribe(tag, nil, nil, function(_instance, _dt)
-		updateCalls += 1
-	end)
+	local unsub = tbs:subscribe(tag, {
+		update = function(_instance, _dt)
+			updateCalls += 1
+		end,
+	})
 	tbs:start()
 
 	expectEqual(updateCalls, 1, "on-attach update")
@@ -892,6 +867,39 @@ test("update-only subscription works without factory", function()
 
 	tbs:updateAll(0.1)
 	expectEqual(updateCalls, 2, "after updateAll")
+
+	unsub()
+	part:Destroy()
+end)
+
+-- 30. Subscribe with table config works ------------------------------------
+
+test("subscribe with table config works", function()
+	local tag = uniqueTag()
+	local part = makePart(tag)
+
+	local factoryRan = false
+	local filterRan = false
+	local updateRan = false
+	local tbs = TBS.new()
+	local unsub = tbs:subscribe(tag, {
+		factory = function(_instance)
+			factoryRan = true
+			return nil
+		end,
+		filter = function(instance)
+			filterRan = true
+			return instance:IsA("BasePart")
+		end,
+		update = function(_instance, _dt)
+			updateRan = true
+		end,
+	})
+	tbs:start()
+
+	expect(filterRan, "filter should have run")
+	expect(factoryRan, "factory should have run")
+	expect(updateRan, "update should have run on attach")
 
 	unsub()
 	part:Destroy()
